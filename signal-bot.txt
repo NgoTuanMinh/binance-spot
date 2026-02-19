@@ -1,0 +1,130 @@
+Tôi cần bạn xây dựng một Python bot để quét tín hiệu giao dịch crypto và gửi về Telegram. Đây là đặc tả chi tiết:
+
+## 🎯 MỤC TIÊU
+- Bot chạy polling để lấy dữ liệu từ Binance (dùng CCXT)
+- Phân tích kỹ thuật để phát hiện tín hiệu BUY (swing trading, giữ vài ngày đến vài tuần)
+- Khi có tín hiệu BUY, gửi message chi tiết về Telegram
+- KHÔNG tự động giao dịch, chỉ gửi tín hiệu để tôi tự quyết định
+
+## 📊 CHIẾN LƯỢC GIAO DỊCH (Bộ lọc 3 lớp)
+
+### Lớp 1 - Xu hướng dài hạn (Daily timeframe)
+- Giá > EMA50
+- EMA50 > EMA200
+- RSI(14) > 40 (không quá yếu)
+
+### Lớp 2 - Volume Spike (77% win rate theo Tickeron)
+- Volume hiện tại > 250% so với trung bình 65 nến gần nhất
+- Tính: volume_ratio = current_volume / SMA(volume, 65)
+
+### Lớp 3 - Breakout từ vùng tích lũy
+- Phát hiện vùng tích lũy: biên độ giá 30 nến gần nhất < 15%
+- Giá hiện tại gần đáy của vùng tích lũy (30% dưới cùng của range)
+- Breakout xảy ra khi giá vượt 98% của kháng cự vùng tích lũy
+
+## 📈 CHỈ BÁO KỸ THUẬT CẦN TÍNH
+- EMA (20, 50, 200)
+- RSI (14)
+- ATR (14) - để đo volatility
+- Volume SMA (65)
+- Kháng cự/ hỗ trợ động (20 period)
+
+## 🤖 TELEGRAM INTEGRATION
+- Dùng python-telegram-bot (v20+)
+- Gửi message format HTML với emoji
+- Chỉ gửi tín hiệu BUY (bỏ qua HOLD)
+- Message cần hiển thị:
+  * Symbol, thời gian
+  * Giá entry, stop loss, TP1 (10%), TP2 (20%)
+  * Risk %, Reward %, R:R ratio
+  * Volume ratio, accumulation range, RSI daily, ATR%
+
+## 🔧 KỸ THUẬT YÊU CẦU
+
+### Data Fetching
+- Dùng CCXT để lấy từ Binance spot
+- Timeframes: 1d (250 nến), 4h (100 nến), 1h (100 nến)
+- Retry logic với exponential backoff
+- Tránh rate limit
+
+### Cấu trúc file
+project/
+├── main.py # Bot chính, scheduling
+├── signal_detector.py # Logic phân tích tín hiệu
+├── telegram_bot.py # Gửi message Telegram
+├── config.py # Cấu hình
+├── .env # Environment variables
+├── requirements.txt
+└── Dockerfile (optional)
+
+
+### Scheduling
+- Polling mỗi 4 giờ (có thể cấu hình qua biến môi trường)
+- Dùng thư viện `schedule` hoặc `apscheduler`
+
+### Environment Variables (.env)
+TELEGRAM_BOT_TOKEN=...
+TELEGRAM_CHAT_ID=...
+SYMBOLS=BTC/USDT,ETH/USDT,SOL/USDT,ARB/USDT,OP/USDT
+POLLING_INTERVAL_HOURS=4
+MIN_VOLUME_USDT=1000000
+
+
+### Error Handling & Logging
+- Log đầy đủ ra file và console
+- Bắt lỗi network, exchange errors
+- Bot không crash khi có lỗi nhỏ
+
+## 📝 OUTPUT MONG MUỐN
+Mỗi khi phát hiện tín hiệu BUY, Telegram message phải như này:
+🚨 🚀 BUY SIGNAL DETECTED 🚨
+
+🪙 Symbol: SOL/USDT
+⏰ Time: 2024-01-15 14:30:22
+
+━━━━━━━━━━━━━━━━━━━━━
+📊 PRICE LEVELS
+━━━━━━━━━━━━━━━━━━━━━
+💵 Entry: $98.45
+🛑 Stop Loss: $93.53
+🎯 TP1 (10%): $108.30
+🎯 TP2 (20%): $118.14
+
+━━━━━━━━━━━━━━━━━━━━━
+📈 RISK METRICS
+━━━━━━━━━━━━━━━━━━━━━
+⚠️ Risk: 5.0%
+💰 Reward (TP1): 10.0%
+⚖️ R:R Ratio: 1:2.0
+
+━━━━━━━━━━━━━━━━━━━━━
+🔍 SIGNAL STRENGTH
+━━━━━━━━━━━━━━━━━━━━━
+📊 Volume Spike: 3.2x avg
+📦 Accumulation Range: 8.5%
+📈 RSI (Daily): 54.3
+🌊 ATR (1h): 2.8%
+
+━━━━━━━━━━━━━━━━━━━━━
+⚠️ DYOR - This is just signal, not financial advice
+
+
+
+## ✅ CHECKLIST CODE CẦN CÓ
+- [x] SignalDetector class với các method check_buy_signal()
+- [x] Tính toán đúng các indicators
+- [x] Phát hiện volume spike >2.5x
+- [x] Phát hiện accumulation zone và breakout
+- [x] Tính toán entry, SL, TP dựa trên ATR và accumulation range
+- [x] TelegramSender với async/await
+- [x] Main loop với scheduling
+- [x] Logging và error handling
+- [x] Config qua environment variables
+
+## 🚫 KHÔNG CẦN
+- Không tự động đặt lệnh
+- Không cần backtest (có thể có sau)
+- Không cần database
+- Không cần web UI
+
+Hãy viết code đầy đủ, clean, có comment và giải thích. Tôi sẽ chạy trên Python 3.10+ và ubuntu 22.04, hãy viết file script để setup trên ubuntu và tôi sẽ quản lý process bằng pm2

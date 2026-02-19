@@ -1,0 +1,16 @@
+# Binance API
+ccxt>=4.0.0
+
+# Telegram
+python-telegram-bot>=20.0
+
+# Scheduling
+apscheduler>=3.10.0
+
+# Environment
+python-dotenv>=1.0.0
+
+# Technical analysis (optional fallback - we implement manually for full control)
+# pandas>=2.0.0
+pandas>=2.0.0
+numpy>=1.24.0
