@@ -64,7 +64,7 @@ ACCUMULATION_LOOKBACK = 30
 ACCUMULATION_RANGE_MAX_PCT = 15.0
 ACCUMULATION_BOTTOM_PCT = 30.0   # giá gần đáy = trong 30% dưới của range
 BREAKOUT_THRESHOLD_PCT = 98.0    # breakout khi giá >= 98% kháng cự
-VOLUME_SPIKE_MIN_RATIO = 2.5    # 250% = 2.5x
+VOLUME_SPIKE_MIN_RATIO = 6    # 600% = 6x
 RSI_MIN_DAILY = 40
 
 # --- Candles ---

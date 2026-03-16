@@ -92,7 +92,7 @@ class SignalDetector:
     """
     Phát hiện tín hiệu BUY theo 3 lớp:
     - Lớp 1: Xu hướng dài hạn (Daily) - Giá > EMA50, EMA50 > EMA200, RSI > 40
-    - Lớp 2: Volume spike - Volume hiện tại > 250% SMA(volume, 65)
+    - Lớp 2: Volume spike - Volume hiện tại > 600% SMA(volume, 65) trên khung 1h
     - Lớp 3: Breakout từ vùng tích lũy (range 30 nến < 15%, giá gần đáy, breakout >= 98% resistance)
     """
 
@@ -137,14 +137,19 @@ class SignalDetector:
         return df
 
     def _get_4h_1h_volume_atr(self, symbol: str) -> tuple[pd.DataFrame | None, pd.DataFrame | None]:
-        """Lấy 4h (volume SMA 65 cần đủ nến), 1h (ATR)."""
+        """
+        Lấy dữ liệu 1h (volume SMA 65 + ATR) và 4h (hiện tại không bắt buộc, giữ để dễ mở rộng).
+        Volume spike được tính trên khung 1h.
+        """
         ohlcv_4h = self._fetch_ohlcv_with_retry(symbol, "4h", CANDLES_4H)
         ohlcv_1h = self._fetch_ohlcv_with_retry(symbol, "1h", CANDLES_1H)
-        if len(ohlcv_4h) < VOLUME_SMA_PERIOD or len(ohlcv_1h) < ATR_PERIOD + 5:
+        # Volume spike và ATR đều dùng 1h nên cần đủ nến 1h
+        if len(ohlcv_1h) < max(VOLUME_SMA_PERIOD, ATR_PERIOD + 5):
             return None, None
-        df_4h = _ensure_dataframe(ohlcv_4h)
+        df_4h = _ensure_dataframe(ohlcv_4h) if ohlcv_4h else pd.DataFrame()
         df_1h = _ensure_dataframe(ohlcv_1h)
-        df_4h["volume_sma"] = _sma(df_4h["volume"], VOLUME_SMA_PERIOD)
+        # Volume SMA 65 trên khung 1h
+        df_1h["volume_sma"] = _sma(df_1h["volume"], VOLUME_SMA_PERIOD)
         df_1h["atr"] = _atr(df_1h["high"], df_1h["low"], df_1h["close"], ATR_PERIOD)
         return df_4h, df_1h
 
@@ -161,11 +166,11 @@ class SignalDetector:
             return False
         return price > ema50 and ema50 > ema200 and rsi > RSI_MIN_DAILY
 
-    def _layer2_volume_spike(self, df_4h: pd.DataFrame) -> tuple[bool, float]:
-        """Lớp 2: volume_ratio = current_volume / SMA(volume, 65) > 2.5. Trả về (pass, ratio)."""
-        if df_4h.empty or len(df_4h) < VOLUME_SMA_PERIOD:
+    def _layer2_volume_spike(self, df_1h: pd.DataFrame) -> tuple[bool, float]:
+        """Lớp 2: volume_ratio = current_volume_1h / SMA(volume_1h, 65) > 2.5. Trả về (pass, ratio)."""
+        if df_1h.empty or len(df_1h) < VOLUME_SMA_PERIOD:
             return False, 0.0
-        last = df_4h.iloc[-1]
+        last = df_1h.iloc[-1]
         vol = last["volume"]
         vol_sma = last["volume_sma"]
         if pd.isna(vol_sma) or vol_sma <= 0:
@@ -242,9 +247,9 @@ class SignalDetector:
                 return None
 
             df_4h, df_1h = self._get_4h_1h_volume_atr(symbol)
-            if df_4h is None:
+            if df_1h is None or df_1h.empty:
                 return None
-            pass_vol, volume_ratio = self._layer2_volume_spike(df_4h)
+            pass_vol, volume_ratio = self._layer2_volume_spike(df_1h)
             if not pass_vol:
                 logger.debug("%s: layer2 volume spike failed (ratio=%.2f)", symbol, volume_ratio)
                 return None
@@ -256,9 +261,9 @@ class SignalDetector:
                 return None
 
             # Lọc volume USDT tối thiểu (optional: cần 24h volume từ exchange)
-            # Ở đây dùng volume 4h gần nhất * 6 làm proxy 24h (4h * 6 = 24h)
-            last_vol = float(df_4h.iloc[-1]["volume"])
-            proxy_24h_quote_vol = last_vol * current_price * 6
+            # Ở đây dùng volume 1h gần nhất * 24 làm proxy 24h (1h * 24 = 24h)
+            last_vol = float(df_1h.iloc[-1]["volume"])
+            proxy_24h_quote_vol = last_vol * current_price * 24
             if proxy_24h_quote_vol < MIN_VOLUME_USDT:
                 logger.debug("%s: min volume USDT not met", symbol)
                 return None
