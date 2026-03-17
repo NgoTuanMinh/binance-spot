@@ -96,17 +96,67 @@ def _sma(s: pd.Series, period: int) -> pd.Series:
 # ──────────────────────────────────────────────────────────
 
 def load_ohlcv(data_dir: Path, symbol: str, interval: str) -> pd.DataFrame | None:
-    """Load CSV từ binance-data-downloader. Trả về None nếu file không tồn tại."""
+    """Load CSV từ binance-data-downloader. Trả về None nếu file không tồn tại hoặc lỗi."""
     path = data_dir / f"{symbol}_{interval}.csv"
     if not path.exists():
         return None
     try:
         df = pd.read_csv(path, parse_dates=["timestamp"])
+
+        # Kiểm tra timestamp có parse thành datetime không
+        if "timestamp" not in df.columns:
+            logger.error("Missing 'timestamp' column in %s", path)
+            return None
+        if not pd.api.types.is_datetime64_any_dtype(df["timestamp"]):
+            # Thử parse lại thủ công (đề phòng format khác như Unix ms)
+            df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce", utc=False)
+
+        # Loại bỏ row có timestamp không parse được (NaT) trước khi set_index
+        nat_count = df["timestamp"].isna().sum()
+        if nat_count > 0:
+            logger.warning("%s: dropped %d rows with invalid timestamp", path.name, nat_count)
+            df = df[df["timestamp"].notna()]
+
+        if df.empty:
+            logger.error("%s: no valid rows after timestamp filter", path.name)
+            return None
+
         df.set_index("timestamp", inplace=True)
+
+        # Đảm bảo index là DatetimeIndex (có thể không phải nếu parse thất bại hoàn toàn)
+        if not isinstance(df.index, pd.DatetimeIndex):
+            logger.error("%s: timestamp index is not DatetimeIndex (got %s)", path.name, type(df.index))
+            return None
+
+        # Loại bỏ NaT còn sót trong index (an toàn kép)
+        if df.index.isna().any():
+            logger.warning("%s: dropped NaT entries from DatetimeIndex", path.name)
+            df = df[df.index.notna()]
+
         df.sort_index(inplace=True)
+
+        # Loại bỏ duplicate timestamps (dữ liệu bị download trùng)
+        dup_count = df.index.duplicated().sum()
+        if dup_count > 0:
+            logger.warning("%s: dropped %d duplicate timestamps", path.name, dup_count)
+            df = df[~df.index.duplicated(keep="last")]
+
         for col in ("open", "high", "low", "close", "volume"):
             df[col] = pd.to_numeric(df[col], errors="coerce")
-        df.dropna(subset=["open", "close"], inplace=True)
+
+        # Loại bỏ row có OHLC không hợp lệ
+        before = len(df)
+        df.dropna(subset=["open", "high", "low", "close"], inplace=True)
+        # Loại bỏ giá âm hoặc bằng 0
+        df = df[(df["close"] > 0) & (df["high"] >= df["low"]) & (df["high"] > 0)]
+        dropped = before - len(df)
+        if dropped > 0:
+            logger.warning("%s: dropped %d rows with invalid OHLC values", path.name, dropped)
+
+        if df.empty:
+            logger.error("%s: no valid OHLCV data after cleanup", path.name)
+            return None
+
         return df
     except Exception as e:
         logger.error("Cannot load %s: %s", path, e)
@@ -116,7 +166,12 @@ def load_ohlcv(data_dir: Path, symbol: str, interval: str) -> pd.DataFrame | Non
 def resample_to_daily(df_1h: pd.DataFrame) -> pd.DataFrame:
     """
     Resample 1H → Daily. Chỉ giữ ngày có đủ ít nhất 20 nến 1H (loại ngày đầu/cuối không đủ).
+    Guard: yêu cầu DatetimeIndex không có NaT trước khi resample.
     """
+    if not isinstance(df_1h.index, pd.DatetimeIndex):
+        raise TypeError(f"resample_to_daily: expected DatetimeIndex, got {type(df_1h.index)}")
+    if df_1h.index.isna().any():
+        df_1h = df_1h[df_1h.index.notna()]
     df_d = df_1h.resample("D").agg(
         open=("open", "first"),
         high=("high", "max"),
@@ -213,9 +268,16 @@ def merge_daily_onto_1h(
     df_d_shifted.index = df_d_shifted.index + pd.Timedelta(days=1)
     df_d_shifted.columns = [c + "_d" for c in daily_cols]
 
+    # merge_asof yêu cầu key đã sort và không có null → drop NaT trước khi merge
+    df_reset = df.reset_index()
+    df_reset = df_reset[df_reset["timestamp"].notna()].sort_values("timestamp")
+
+    d_shifted_reset = df_d_shifted.reset_index().rename(columns={"index": "timestamp"})
+    d_shifted_reset = d_shifted_reset[d_shifted_reset["timestamp"].notna()].sort_values("timestamp")
+
     merged = pd.merge_asof(
-        df.reset_index(),
-        df_d_shifted.reset_index().rename(columns={"index": "timestamp"}),
+        df_reset,
+        d_shifted_reset,
         on="timestamp",
         direction="backward",
     ).set_index("timestamp")
@@ -224,9 +286,11 @@ def merge_daily_onto_1h(
     if enable_btc_filter and btc_d is not None:
         btc_cols = btc_d[["l1_pass"]].rename(columns={"l1_pass": "btc_uptrend"}).copy()
         btc_cols.index = btc_cols.index + pd.Timedelta(days=1)
+        btc_reset = btc_cols.reset_index().rename(columns={"index": "timestamp"})
+        btc_reset = btc_reset[btc_reset["timestamp"].notna()].sort_values("timestamp")
         merged = pd.merge_asof(
-            merged.reset_index(),
-            btc_cols.reset_index().rename(columns={"index": "timestamp"}),
+            merged.reset_index().sort_values("timestamp"),
+            btc_reset,
             on="timestamp",
             direction="backward",
         ).set_index("timestamp")
@@ -284,6 +348,9 @@ def extract_signals(merged: pd.DataFrame, symbol: str) -> pd.DataFrame:
 
     records = []
     for ts, row in sig_rows.iterrows():
+        # Bỏ qua nếu timestamp index là NaT (do merge tạo ra)
+        if pd.isna(ts):
+            continue
         entry = float(row["close"])
         atr_val = float(row["atr_1h"]) if not pd.isna(row["atr_1h"]) else entry * 0.01
         acc_low = float(row["acc_low_d"]) if not pd.isna(row["acc_low_d"]) else 0.0
@@ -346,6 +413,10 @@ def simulate_trades(
 
     for _, sig in signals.sort_values("signal_time").iterrows():
         signal_ts = sig["signal_time"]
+
+        # Bỏ qua signal có timestamp không hợp lệ
+        if pd.isna(signal_ts):
+            continue
 
         # Tìm vị trí của nến signal trong df_1h
         if signal_ts not in idx_map:
