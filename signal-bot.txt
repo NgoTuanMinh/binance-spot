@@ -14,7 +14,7 @@ Tôi cần bạn xây dựng một Python bot để quét tín hiệu giao dịc
 - RSI(14) > 40 (không quá yếu)
 
 ### Lớp 2 - Volume Spike (77% win rate theo Tickeron)
-- Volume hiện tại > 250% so với trung bình 65 nến gần nhất
+- Volume hiện tại > 600% so với trung bình 65 nến gần nhất
 - Tính: volume_ratio = current_volume / SMA(volume, 65)
 
 ### Lớp 3 - Breakout từ vùng tích lũy
@@ -113,7 +113,7 @@ Mỗi khi phát hiện tín hiệu BUY, Telegram message phải như này:
 ## ✅ CHECKLIST CODE CẦN CÓ
 - [x] SignalDetector class với các method check_buy_signal()
 - [x] Tính toán đúng các indicators
-- [x] Phát hiện volume spike >2.5x
+- [x] Phát hiện volume spike > 6x
 - [x] Phát hiện accumulation zone và breakout
 - [x] Tính toán entry, SL, TP dựa trên ATR và accumulation range
 - [x] TelegramSender với async/await

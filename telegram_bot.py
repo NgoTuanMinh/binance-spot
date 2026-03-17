@@ -4,7 +4,7 @@ Chỉ gửi khi có tín hiệu BUY, không gửi HOLD.
 """
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 from telegram import Bot
 
@@ -28,7 +28,7 @@ def format_buy_message(signal: BuySignal) -> str:
     Format nội dung message theo spec: HTML với emoji.
     Telegram HTML: <code>, <b>, <i>, <pre>, <a href="...">.
     """
-    t = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    t = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     entry = signal.entry
     sl = signal.stop_loss
     tp1 = signal.tp1

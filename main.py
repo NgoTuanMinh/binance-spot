@@ -4,6 +4,7 @@ Không tự động giao dịch.
 """
 import logging
 import sys
+import time
 from pathlib import Path
 
 import ccxt  # pyright: ignore[reportMissingImports]
@@ -11,6 +12,8 @@ from apscheduler.schedulers.blocking import BlockingScheduler  # pyright: ignore
 from apscheduler.triggers.interval import IntervalTrigger  # pyright: ignore[reportMissingImports]
 
 from config import (
+    BTC_SYMBOL,
+    ENABLE_BTC_FILTER,
     EXCHANGE_ID,
     EXCHANGE_OPTIONS,
     LOG_FILE,
@@ -18,6 +21,7 @@ from config import (
     LOG_DIR,
     MIN_VOLUME_USDT,
     POLLING_INTERVAL_HOURS,
+    SCAN_DELAY_SECONDS,
     SYMBOLS,
     TOP_SYMBOLS_COUNT,
     USE_TOP_BY_VOLUME,
@@ -55,14 +59,25 @@ def get_symbols_to_scan(exchange):
 def run_scan():
     """Quét toàn bộ symbol (từ config hoặc top volume), gửi Telegram khi có tín hiệu BUY."""
     exchange = create_exchange()
+    detector = SignalDetector(exchange)
+
+    # Lớp 0: Kiểm tra xu hướng BTC trước — nếu BTC downtrend, bỏ qua toàn bộ scan
+    if ENABLE_BTC_FILTER and not detector.check_market_trend(BTC_SYMBOL):
+        logger.info("BTC in downtrend — scan skipped this round")
+        try:
+            exchange.close()
+        except Exception:
+            pass
+        return
+
     symbols = get_symbols_to_scan(exchange)
     logger.info("Scanning %d symbols: %s", len(symbols), symbols[:15] if len(symbols) > 15 else symbols)
-    detector = SignalDetector(exchange)
+
     for symbol in symbols:
         try:
             signal = detector.check_buy_signal(symbol)
             if signal:
-                logger.info("BUY signal: %s entry=%.2f", signal.symbol, signal.entry)
+                logger.info("BUY signal: %s entry=%.4f rr=%.2f", signal.symbol, signal.entry, signal.rr_ratio)
                 ok = send_signal_sync(signal)
                 if not ok:
                     logger.warning("Failed to send Telegram for %s", signal.symbol)
@@ -70,7 +85,10 @@ def run_scan():
                 logger.debug("No signal for %s", symbol)
         except Exception as e:
             logger.exception("Error scanning %s: %s", symbol, e)
-            # Tiếp tục symbol tiếp theo, không crash
+        # Throttle giữa các symbol để tránh Binance rate limit
+        if SCAN_DELAY_SECONDS > 0:
+            time.sleep(SCAN_DELAY_SECONDS)
+
     try:
         exchange.close()
     except Exception:

@@ -15,16 +15,17 @@ from config import (
     ACCUMULATION_LOOKBACK,
     ACCUMULATION_RANGE_MAX_PCT,
     ATR_PERIOD,
+    ATR_SL_MULTIPLIER,
     BREAKOUT_THRESHOLD_PCT,
     CANDLES_1D,
     CANDLES_1H,
-    CANDLES_4H,
     EMA_PERIODS,
+    ENABLE_BTC_FILTER,
     MIN_VOLUME_USDT,
     RSI_MIN_DAILY,
     RSI_PERIOD,
-    SUPPORT_RESISTANCE_PERIOD,
     VOLUME_SMA_PERIOD,
+    VOLUME_SPIKE_LOOKBACK_CANDLES,
     VOLUME_SPIKE_MIN_RATIO,
 )
 
@@ -91,9 +92,11 @@ def _ensure_dataframe(ohlcv: list) -> pd.DataFrame:
 class SignalDetector:
     """
     Phát hiện tín hiệu BUY theo 3 lớp:
+    - Lớp 0 (tiền đề): BTC phải uptrend trên Daily (tùy chọn, xem ENABLE_BTC_FILTER)
     - Lớp 1: Xu hướng dài hạn (Daily) - Giá > EMA50, EMA50 > EMA200, RSI > 40
-    - Lớp 2: Volume spike - Volume hiện tại > 600% SMA(volume, 65) trên khung 1h
-    - Lớp 3: Breakout từ vùng tích lũy (range 30 nến < 15%, giá gần đáy, breakout >= 98% resistance)
+    - Lớp 2: Volume spike - Volume của nến 1h VỪA đóng > VOLUME_SPIKE_MIN_RATIO × SMA(volume, 65)
+    - Lớp 3: Breakout từ vùng tích lũy (range 30 nến đã đóng < 15%, nến trước ở đáy,
+              giá hiện tại >= 98% kháng cự)
     """
 
     def __init__(self, exchange: Any):
@@ -136,28 +139,66 @@ class SignalDetector:
         df["rsi"] = _rsi(close, RSI_PERIOD)
         return df
 
-    def _get_4h_1h_volume_atr(self, symbol: str) -> tuple[pd.DataFrame | None, pd.DataFrame | None]:
+    def _get_1h_volume_atr(self, symbol: str) -> pd.DataFrame | None:
         """
-        Lấy dữ liệu 1h (volume SMA 65 + ATR) và 4h (hiện tại không bắt buộc, giữ để dễ mở rộng).
-        Volume spike được tính trên khung 1h.
+        Lấy dữ liệu 1h: tính Volume SMA(65) và ATR(14).
+        Trả về None nếu không đủ dữ liệu.
         """
-        ohlcv_4h = self._fetch_ohlcv_with_retry(symbol, "4h", CANDLES_4H)
         ohlcv_1h = self._fetch_ohlcv_with_retry(symbol, "1h", CANDLES_1H)
-        # Volume spike và ATR đều dùng 1h nên cần đủ nến 1h
-        if len(ohlcv_1h) < max(VOLUME_SMA_PERIOD, ATR_PERIOD + 5):
-            return None, None
-        df_4h = _ensure_dataframe(ohlcv_4h) if ohlcv_4h else pd.DataFrame()
+        # Cần đủ nến để SMA warmup + ít nhất 2 nến đã đóng để dùng iloc[-2]
+        if len(ohlcv_1h) < max(VOLUME_SMA_PERIOD + 2, ATR_PERIOD + 5):
+            return None
         df_1h = _ensure_dataframe(ohlcv_1h)
-        # Volume SMA 65 trên khung 1h
         df_1h["volume_sma"] = _sma(df_1h["volume"], VOLUME_SMA_PERIOD)
         df_1h["atr"] = _atr(df_1h["high"], df_1h["low"], df_1h["close"], ATR_PERIOD)
-        return df_4h, df_1h
+        return df_1h
+
+    # ------------------------------------------------------------------
+    # Lớp 0: Bộ lọc thị trường chung (BTC)
+    # ------------------------------------------------------------------
+
+    def check_market_trend(self, btc_symbol: str) -> bool:
+        """
+        Kiểm tra xu hướng thị trường chung qua BTC:
+        - Giá BTC > EMA50 (daily)
+        - EMA50 > EMA200 (daily)
+        Nếu ENABLE_BTC_FILTER=False thì luôn trả True.
+        """
+        if not ENABLE_BTC_FILTER:
+            return True
+        try:
+            df = self._get_daily_indicators(btc_symbol)
+            if df is None or df.empty:
+                logger.warning("BTC daily data unavailable, skipping BTC filter")
+                return True
+            # Dùng nến đã đóng gần nhất (iloc[-2]) để tránh candle đang hình thành
+            last = df.iloc[-2]
+            ema50 = last["ema_50"]
+            ema200 = last["ema_200"]
+            price = last["close"]
+            if pd.isna(ema50) or pd.isna(ema200):
+                return True
+            trend_ok = price > ema50 and ema50 > ema200
+            if not trend_ok:
+                logger.info("BTC market filter: DOWNTREND (price=%.2f ema50=%.2f ema200=%.2f) → skip all", price, ema50, ema200)
+            return trend_ok
+        except Exception as e:
+            logger.warning("check_market_trend BTC error: %s — skipping filter", e)
+            return True
+
+    # ------------------------------------------------------------------
+    # Lớp 1: Xu hướng dài hạn (Daily)
+    # ------------------------------------------------------------------
 
     def _layer1_trend(self, df_d: pd.DataFrame) -> bool:
-        """Lớp 1: Giá > EMA50, EMA50 > EMA200, RSI(14) > 40 (daily)."""
-        if df_d.empty or len(df_d) < 2:
+        """
+        Lớp 1: Dùng nến daily đã đóng gần nhất (iloc[-2]).
+        Điều kiện: Giá > EMA50, EMA50 > EMA200, RSI(14) > RSI_MIN_DAILY.
+        """
+        if df_d.empty or len(df_d) < 3:
             return False
-        last = df_d.iloc[-1]
+        # iloc[-2]: nến daily đã đóng hoàn toàn (iloc[-1] có thể chưa xong)
+        last = df_d.iloc[-2]
         price = last["close"]
         ema50 = last["ema_50"]
         ema200 = last["ema_200"]
@@ -166,17 +207,40 @@ class SignalDetector:
             return False
         return price > ema50 and ema50 > ema200 and rsi > RSI_MIN_DAILY
 
+    # ------------------------------------------------------------------
+    # Lớp 2: Volume spike trên 1h
+    # ------------------------------------------------------------------
+
     def _layer2_volume_spike(self, df_1h: pd.DataFrame) -> tuple[bool, float]:
-        """Lớp 2: volume_ratio = current_volume_1h / SMA(volume_1h, 65) > 2.5. Trả về (pass, ratio)."""
-        if df_1h.empty or len(df_1h) < VOLUME_SMA_PERIOD:
+        """
+        Lớp 2: Xét VOLUME_SPIKE_LOOKBACK_CANDLES nến 1H đã đóng gần nhất (mặc định 2 nến).
+        Pass nếu BẤT KỲ nến nào trong cửa sổ đó có ratio >= VOLUME_SPIKE_MIN_RATIO (6x).
+        Trả về (pass, ratio_cao_nhất_trong_cửa_sổ).
+
+        Lý do xét nhiều nến: bot scan mỗi 1H nên có thể bị trễ nhẹ vài phút;
+        xét 2 nến đã đóng đảm bảo không bỏ sót spike ở nến ngay trước đó.
+        """
+        min_required = VOLUME_SMA_PERIOD + VOLUME_SPIKE_LOOKBACK_CANDLES + 1
+        if df_1h.empty or len(df_1h) < min_required:
             return False, 0.0
-        last = df_1h.iloc[-1]
-        vol = last["volume"]
-        vol_sma = last["volume_sma"]
-        if pd.isna(vol_sma) or vol_sma <= 0:
-            return False, 0.0
-        ratio = float(vol / vol_sma)
-        return ratio >= VOLUME_SPIKE_MIN_RATIO, ratio
+
+        # Lấy N nến đã đóng: bỏ iloc[-1] (đang hình thành), lấy ngược từ iloc[-2]
+        window = df_1h.iloc[-(VOLUME_SPIKE_LOOKBACK_CANDLES + 1): -1]
+        best_ratio = 0.0
+        for _, row in window.iterrows():
+            vol = row["volume"]
+            vol_sma = row["volume_sma"]
+            if pd.isna(vol_sma) or vol_sma <= 0 or pd.isna(vol):
+                continue
+            ratio = float(vol / vol_sma)
+            if ratio > best_ratio:
+                best_ratio = ratio
+
+        return best_ratio >= VOLUME_SPIKE_MIN_RATIO, best_ratio
+
+    # ------------------------------------------------------------------
+    # Lớp 3: Breakout từ vùng tích lũy (Daily)
+    # ------------------------------------------------------------------
 
     def _layer3_accumulation_breakout(
         self,
@@ -184,35 +248,43 @@ class SignalDetector:
         current_price: float,
     ) -> tuple[bool, float]:
         """
-        Lớp 3: Vùng tích lũy 30 nến (range < 15%), giá gần đáy (30% dưới),
-        breakout khi giá >= 98% kháng cự. Trả về (pass, accumulation_range_pct).
+        Lớp 3: Vùng tích lũy được xác định từ ACCUMULATION_LOOKBACK nến daily ĐÃ ĐÓNG
+        (loại trừ candle đang hình thành).
+        Điều kiện:
+        1. Range tích lũy < ACCUMULATION_RANGE_MAX_PCT (15%)
+        2. Nến daily đóng cửa gần nhất nằm trong 30% dưới của range
+        3. Giá hiện tại >= BREAKOUT_THRESHOLD_PCT% của kháng cự (breakout)
+        Trả về (pass, accumulation_range_pct).
         """
-        if df_d.empty or len(df_d) < ACCUMULATION_LOOKBACK:
+        # Cần đủ nến completed: LOOKBACK + 1 (hiện tại) + 1 (prev)
+        if df_d.empty or len(df_d) < ACCUMULATION_LOOKBACK + 2:
             return False, 0.0
-        window = df_d.iloc[-ACCUMULATION_LOOKBACK:]
+
+        # Dùng ACCUMULATION_LOOKBACK nến đã đóng, bỏ candle hiện tại (iloc[-1])
+        window = df_d.iloc[-ACCUMULATION_LOOKBACK - 1: -1]
         low = window["low"].min()
         high = window["high"].max()
         range_pct = ((high - low) / low * 100) if low > 0 else 999.0
         if range_pct >= ACCUMULATION_RANGE_MAX_PCT:
             return False, range_pct
-        # Giá gần đáy: trong 30% dưới của range (đóng cửa nến trước nằm trong vùng đáy)
+
+        # Nến daily đã đóng gần nhất phải nằm trong 30% dưới của range
         bottom_level = low + (high - low) * (ACCUMULATION_BOTTOM_PCT / 100)
-        prev_close = df_d.iloc[-2]["close"] if len(df_d) >= 2 else df_d.iloc[-1]["close"]
+        prev_close = df_d.iloc[-2]["close"]
         if prev_close > bottom_level:
             return False, range_pct
-        # Breakout: giá hiện tại vượt 98% kháng cự vùng tích lũy
+
+        # Giá hiện tại (có thể là candle đang hình thành) phải vượt 98% kháng cự
         resistance = high
         breakout_level = resistance * (BREAKOUT_THRESHOLD_PCT / 100)
         if current_price < breakout_level:
             return False, range_pct
+
         return True, range_pct
 
-    def _support_resistance_20(self, df: pd.DataFrame) -> tuple[float, float]:
-        """Kháng cự/ hỗ trợ động 20 period. Trả về (support, resistance)."""
-        if df.empty or len(df) < SUPPORT_RESISTANCE_PERIOD:
-            return 0.0, 0.0
-        window = df.iloc[-SUPPORT_RESISTANCE_PERIOD:]
-        return float(window["low"].min()), float(window["high"].max())
+    # ------------------------------------------------------------------
+    # Tính SL / TP
+    # ------------------------------------------------------------------
 
     def _compute_sl_tp(
         self,
@@ -221,21 +293,32 @@ class SignalDetector:
         accumulation_low: float,
     ) -> tuple[float, float, float]:
         """
-        Stop loss: dưới entry, có thể dùng max(accumulation_low, entry - 2*ATR).
-        TP1 = +10%, TP2 = +20%.
+        SL: max(accumulation_low, entry - ATR_SL_MULTIPLIER × ATR_1h).
+        Dùng max (không phải min) để lấy mức SL CHẶ T HƠN nhưng không thấp hơn đáy
+        tích lũy.
+        TP1 = entry × 1.10, TP2 = entry × 1.20.
+
+        Lý do dùng max:
+        - entry - N×ATR thường ≈ 1-3% dưới entry (hợp lý cho breakout)
+        - accumulation_low có thể 10-15% dưới entry (quá xa, R:R âm tại TP1)
+        - max() chọn mức gần entry hơn (ATR-based), dùng acc_low chỉ khi ATR rất lớn.
         """
-        # SL: dưới đáy tích lũy hoặc entry - 1.5 ATR (tránh quá chặt)
-        sl_candidate_atr = entry - 1.5 * atr_1h
-        sl = min(accumulation_low, sl_candidate_atr) if accumulation_low > 0 else sl_candidate_atr
+        sl_atr = entry - ATR_SL_MULTIPLIER * atr_1h
+        sl = max(accumulation_low, sl_atr) if accumulation_low > 0 else sl_atr
         if sl >= entry:
-            sl = entry - atr_1h
+            sl = entry - atr_1h  # fallback tránh SL >= entry
         tp1 = entry * 1.10
         tp2 = entry * 1.20
         return sl, tp1, tp2
 
+    # ------------------------------------------------------------------
+    # Entry point chính
+    # ------------------------------------------------------------------
+
     def check_buy_signal(self, symbol: str) -> BuySignal | None:
         """
         Kiểm tra đủ 3 lớp lọc; nếu pass thì tính entry, SL, TP và trả về BuySignal.
+        BTC filter (lớp 0) được kiểm tra 1 lần/scan trong run_scan() trước khi gọi hàm này.
         """
         try:
             df_d = self._get_daily_indicators(symbol)
@@ -246,48 +329,45 @@ class SignalDetector:
                 logger.debug("%s: layer1 trend failed", symbol)
                 return None
 
-            df_4h, df_1h = self._get_4h_1h_volume_atr(symbol)
+            df_1h = self._get_1h_volume_atr(symbol)
             if df_1h is None or df_1h.empty:
+                logger.debug("%s: insufficient 1h data", symbol)
                 return None
+
             pass_vol, volume_ratio = self._layer2_volume_spike(df_1h)
             if not pass_vol:
                 logger.debug("%s: layer2 volume spike failed (ratio=%.2f)", symbol, volume_ratio)
                 return None
 
+            # Dùng giá đóng cửa hiện tại (có thể là nến đang hình thành) làm current price
             current_price = float(df_d.iloc[-1]["close"])
             pass_acc, acc_range_pct = self._layer3_accumulation_breakout(df_d, current_price)
             if not pass_acc:
                 logger.debug("%s: layer3 accumulation/breakout failed", symbol)
                 return None
 
-            # Lọc volume USDT tối thiểu (optional: cần 24h volume từ exchange)
-            # Ở đây dùng volume 1h gần nhất * 24 làm proxy 24h (1h * 24 = 24h)
-            last_vol = float(df_1h.iloc[-1]["volume"])
-            proxy_24h_quote_vol = last_vol * current_price * 24
+            # Lọc volume USDT tối thiểu: dùng nến 1h đã đóng × giá × 24 làm proxy 24h
+            last_completed_vol = float(df_1h.iloc[-2]["volume"])
+            proxy_24h_quote_vol = last_completed_vol * current_price * 24
             if proxy_24h_quote_vol < MIN_VOLUME_USDT:
-                logger.debug("%s: min volume USDT not met", symbol)
+                logger.debug("%s: min volume USDT not met (proxy=%.0f)", symbol, proxy_24h_quote_vol)
                 return None
 
-            # Accumulation low cho SL
-            window = df_d.iloc[-ACCUMULATION_LOOKBACK:]
+            # Accumulation zone từ nến đã đóng (giống Layer 3)
+            window = df_d.iloc[-ACCUMULATION_LOOKBACK - 1: -1]
             acc_low = float(window["low"].min())
             acc_high = float(window["high"].max())
 
-            # ATR 1h (điểm) và ATR% (cho message)
-            if df_1h is not None and not df_1h.empty:
-                atr_val = float(df_1h.iloc[-1]["atr"])
-                atr_pct = (atr_val / current_price * 100) if current_price > 0 else 0.0
-            else:
-                atr_val = (acc_high - acc_low) * 0.02
-                atr_pct = 0.0
+            atr_val = float(df_1h.iloc[-2]["atr"])
+            atr_pct = (atr_val / current_price * 100) if current_price > 0 else 0.0
 
             entry = current_price
             sl, tp1, tp2 = self._compute_sl_tp(entry, atr_val, acc_low)
-            risk_pct = ((entry - sl) / entry * 100) if entry > 0 else 0.0
-            reward_tp1_pct = 10.0
-            rr = (tp1 - entry) / (entry - sl) if (entry - sl) > 0 else 0.0
 
-            rsi_daily = float(df_d.iloc[-1]["rsi"])
+            risk_pct = ((entry - sl) / entry * 100) if entry > 0 else 0.0
+            reward_tp1_pct = ((tp1 - entry) / entry * 100) if entry > 0 else 10.0
+            rr = (tp1 - entry) / (entry - sl) if (entry - sl) > 0 else 0.0
+            rsi_daily = float(df_d.iloc[-2]["rsi"])
 
             return BuySignal(
                 symbol=symbol,

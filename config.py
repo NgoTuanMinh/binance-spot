@@ -45,7 +45,11 @@ TOP_SYMBOLS_COUNT = max(10, min(100, _get_int("TOP_SYMBOLS_COUNT", 50)))
 USE_TOP_BY_VOLUME = len(SYMBOLS) == 0
 
 # --- Scheduling ---
-POLLING_INTERVAL_HOURS = _get_int("POLLING_INTERVAL_HOURS", 4)
+# Nên đặt = 1 vì Layer 2 dùng tín hiệu volume 1H; scan 4H sẽ bỏ sót 3/4 nến
+POLLING_INTERVAL_HOURS = _get_int("POLLING_INTERVAL_HOURS", 1)
+
+# Số nến 1H gần nhất được xét cho volume spike (để tránh bỏ sót khi scan bị delay nhẹ)
+VOLUME_SPIKE_LOOKBACK_CANDLES = _get_int("VOLUME_SPIKE_LOOKBACK_CANDLES", 2)
 
 # --- Filter ---
 MIN_VOLUME_USDT = _get_float("MIN_VOLUME_USDT", 1_000_000)
@@ -54,23 +58,32 @@ MIN_VOLUME_USDT = _get_float("MIN_VOLUME_USDT", 1_000_000)
 EXCHANGE_ID = "binance"
 EXCHANGE_OPTIONS = {"defaultType": "spot"}
 
+# --- BTC Market Filter ---
+# BTC phải uptrend (EMA50 > EMA200, price > EMA50) trước khi scan altcoin
+BTC_SYMBOL = "BTC/USDT"
+ENABLE_BTC_FILTER = _get_env("ENABLE_BTC_FILTER", "true").lower() not in ("false", "0", "no")
+
 # --- Indicator params (có thể đổi qua env sau nếu cần) ---
 EMA_PERIODS = (20, 50, 200)
 RSI_PERIOD = 14
 ATR_PERIOD = 14
 VOLUME_SMA_PERIOD = 65
-SUPPORT_RESISTANCE_PERIOD = 20
 ACCUMULATION_LOOKBACK = 30
 ACCUMULATION_RANGE_MAX_PCT = 15.0
 ACCUMULATION_BOTTOM_PCT = 30.0   # giá gần đáy = trong 30% dưới của range
 BREAKOUT_THRESHOLD_PCT = 98.0    # breakout khi giá >= 98% kháng cự
-VOLUME_SPIKE_MIN_RATIO = 6    # 600% = 6x
+VOLUME_SPIKE_MIN_RATIO = 6       # 600% = 6x so với SMA(volume, 65)
 RSI_MIN_DAILY = 40
+ATR_SL_MULTIPLIER = 2.0          # SL = entry - ATR_SL_MULTIPLIER * ATR(1h)
 
 # --- Candles ---
 CANDLES_1D = 250
-CANDLES_4H = 100
-CANDLES_1H = 100
+# CANDLES_1H cần đủ để SMA warmup (65) + buffer thực chiến; 200 = 65 + 135 candle hữu ích
+CANDLES_1H = 200
+
+# --- Scan throttle ---
+# Delay (giây) giữa mỗi symbol để tránh hit Binance rate limit (50 symbols × 2 timeframes)
+SCAN_DELAY_SECONDS = _get_float("SCAN_DELAY_SECONDS", 0.3)
 
 # --- Logging ---
 LOG_DIR = Path(__file__).resolve().parent / "logs"
