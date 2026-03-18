@@ -41,12 +41,23 @@ pm2 start "python main.py" --name signal-bot --cwd /path/to/Binance-spot
 ```
 
 ## Chạy backtest
+
 ```bash
+Window:
 python -m venv .venv
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .venv\Scripts\activate
 python backtest.py
+
+MacOS:
+python -m venv .venv
+source .venv/bin/activate
+python backtest.py
 ```
+
+**Profile:**
+- `python backtest.py` – default (~536% return, DD ~60%)
+- `python backtest.py --profile aggressive` – tối đa return (~905%, DD ~73%, gần mục tiêu 1000%)
 
 ## Cấu hình (.env)
 

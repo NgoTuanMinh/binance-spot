@@ -65,16 +65,18 @@ ENABLE_BTC_FILTER = _get_env("ENABLE_BTC_FILTER", "true").lower() not in ("false
 
 # --- Indicator params (có thể đổi qua env sau nếu cần) ---
 EMA_PERIODS = (20, 50, 200)
-RSI_PERIOD = 14
-ATR_PERIOD = 14
-VOLUME_SMA_PERIOD = 20           # Chuyển từ 65 xuống 20 để volume trung bình bám sát thực tế hơn
-ACCUMULATION_LOOKBACK = 30
-ACCUMULATION_RANGE_MAX_PCT = 35.0 # Mở rộng biên độ tích lũy cho crypto (15% là quá hẹp)
-ACCUMULATION_POSITION_PCT = 50.0 # Giá nến trước nằm ở nửa trên của vùng tích lũy (áp lực mua gom sát kháng cự)
-BREAKOUT_THRESHOLD_PCT = 98.0    # breakout khi giá >= 98% kháng cự
-VOLUME_SPIKE_MIN_RATIO = 2.5     # 2.5x SMA(volume) là đủ xác nhận dòng tiền, 6x thường là FOMO đu đỉnh
-RSI_MIN_DAILY = 50               # Phe mua kiểm soát hoàn toàn
-ATR_SL_MULTIPLIER = 2.5          # Nới Stop Loss tránh bị quét râu nến
+RSI_PERIOD = _get_int("RSI_PERIOD", 14)
+ATR_PERIOD = _get_int("ATR_PERIOD", 14)
+VOLUME_SMA_PERIOD = _get_int("VOLUME_SMA_PERIOD", 20)
+ACCUMULATION_LOOKBACK = _get_int("ACCUMULATION_LOOKBACK", 30)
+ACCUMULATION_RANGE_MAX_PCT = _get_float("ACCUMULATION_RANGE_MAX_PCT", 60.0)
+ACCUMULATION_POSITION_PCT = _get_float("ACCUMULATION_POSITION_PCT", 30.0)
+BREAKOUT_THRESHOLD_PCT = _get_float("BREAKOUT_THRESHOLD_PCT", 90.0)
+VOLUME_SPIKE_MIN_RATIO = _get_float("VOLUME_SPIKE_MIN_RATIO", 0.5)
+RSI_MIN_DAILY = _get_float("RSI_MIN_DAILY", 26.0)
+ATR_SL_MULTIPLIER = _get_float("ATR_SL_MULTIPLIER", 0.35)
+TP1_RR_RATIO = _get_float("TP1_RR_RATIO", 1.3)
+TP2_RR_RATIO = _get_float("TP2_RR_RATIO", 15.0)
 
 # --- Candles ---
 CANDLES_1D = 250

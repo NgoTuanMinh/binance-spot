@@ -24,6 +24,8 @@ from config import (
     MIN_VOLUME_USDT,
     RSI_MIN_DAILY,
     RSI_PERIOD,
+    TP1_RR_RATIO,
+    TP2_RR_RATIO,
     VOLUME_SMA_PERIOD,
     VOLUME_SPIKE_LOOKBACK_CANDLES,
     VOLUME_SPIKE_MIN_RATIO,
@@ -296,7 +298,8 @@ class SignalDetector:
         """
         SL: min(accumulation_low, entry - ATR_SL_MULTIPLIER × ATR_1h).
         Dùng min để lấy mức SL RỘNG HƠN, ưu tiên đáy tích lũy.
-        TP1 = entry × 1.10, TP2 = entry × 1.20.
+        TP1 = entry + risk_dist * TP1_RR_RATIO
+        TP2 = entry + risk_dist * TP2_RR_RATIO
 
         Lý do dùng min:
         - `accumulation_low` là hỗ trợ tự nhiên, SL dưới mức này là hợp lý.
@@ -307,8 +310,9 @@ class SignalDetector:
         sl = min(accumulation_low, sl_atr) if accumulation_low > 0 else sl_atr
         if sl >= entry:
             sl = entry - atr_1h  # fallback tránh SL >= entry
-        tp1 = entry * 1.10
-        tp2 = entry * 1.20
+        risk_dist = max(entry - sl, 0.0)
+        tp1 = entry + risk_dist * TP1_RR_RATIO
+        tp2 = entry + risk_dist * TP2_RR_RATIO
         return sl, tp1, tp2
 
     # ------------------------------------------------------------------
