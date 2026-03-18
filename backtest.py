@@ -33,21 +33,24 @@ import pandas as pd
 EMA_PERIODS                 = (20, 50, 200)
 RSI_PERIOD                  = 14
 ATR_PERIOD                  = 14
-VOLUME_SMA_PERIOD           = 65
-VOLUME_SPIKE_MIN_RATIO      = 6.0
+VOLUME_SMA_PERIOD           = 20
+VOLUME_SPIKE_MIN_RATIO      = 2.0
 VOLUME_SPIKE_LOOKBACK       = 2       # số nến 1H đã đóng để kiểm tra spike
 ACCUMULATION_LOOKBACK       = 30      # nến daily
-ACCUMULATION_RANGE_MAX_PCT  = 15.0
-ACCUMULATION_BOTTOM_PCT     = 30.0
-BREAKOUT_THRESHOLD_PCT      = 98.0
+ACCUMULATION_RANGE_MAX_PCT  = 50.0
+ACCUMULATION_POSITION_PCT   = 30.0
+BREAKOUT_THRESHOLD_PCT      = 95.0
 ATR_SL_MULTIPLIER           = 2.0
 RSI_MIN_DAILY               = 40
+TP1_RR_RATIO                = 1.5
+TP2_RR_RATIO                = 3.0
 BTC_SYMBOL                  = "BTCUSDT"
 
 # Tham số backtest
 TRADE_TIMEOUT_DAYS          = 30      # đóng lệnh sau N ngày nếu không chạm SL/TP
 RISK_PER_TRADE_PCT          = 1.0     # % equity rủi ro mỗi lệnh (để tính equity curve)
 WARMUP_DAILY_BARS           = 250     # số nến daily tối thiểu trước khi bắt đầu tín hiệu
+MAX_RISK_PER_TRADE_PCT      = 10.0     # maximum risk per trade in percentage
 
 # ──────────────────────────────────────────────────────────
 # Logging
@@ -212,8 +215,8 @@ def compute_daily_indicators(df_d: pd.DataFrame) -> pd.DataFrame:
     df["acc_range_pct"] = (
         (df["acc_high"] - df["acc_low"]) / df["acc_low"].replace(0, np.nan) * 100
     )
-    df["acc_bottom"] = (
-        df["acc_low"] + (df["acc_high"] - df["acc_low"]) * (ACCUMULATION_BOTTOM_PCT / 100)
+    df["acc_position"] = (
+        df["acc_low"] + (df["acc_high"] - df["acc_low"]) * (ACCUMULATION_POSITION_PCT / 100)
     )
 
     # Layer 1: price > EMA50 > EMA200, RSI > 40
@@ -224,10 +227,10 @@ def compute_daily_indicators(df_d: pd.DataFrame) -> pd.DataFrame:
     )
 
     # Layer 3 pre-conditions (không gồm breakout):
-    #   - range < 15% (tight accumulation)
-    #   - yesterday's close <= acc_bottom (price was near support)
+    #   - range < 35%
+    #   - yesterday's close >= acc_position (price building pressure near resistance)
     df["l3_range_ok"]      = df["acc_range_pct"] < ACCUMULATION_RANGE_MAX_PCT
-    df["l3_prev_close_ok"] = close <= df["acc_bottom"]
+    df["l3_prev_close_ok"] = close >= df["acc_position"]
     df["l3_pre_pass"]      = df["l3_range_ok"] & df["l3_prev_close_ok"]
 
     return df
@@ -320,14 +323,15 @@ def merge_daily_onto_1h(
 
 def compute_sl_tp(entry: float, atr_1h: float, acc_low: float) -> tuple[float, float, float]:
     """
-    SL = max(acc_low, entry - ATR_SL_MULTIPLIER × ATR_1h)
-    TP1 = entry × 1.10, TP2 = entry × 1.20
-    Dùng max() để chọn SL chặt hơn (gần entry hơn), tránh SL quá xa.
+    SL = min(acc_low, entry - ATR_SL_MULTIPLIER × ATR_1h)
+    TP1 = entry * 1.10
+    TP2 = entry * 1.20
     """
     sl_atr = entry - ATR_SL_MULTIPLIER * atr_1h
-    sl = max(float(acc_low), sl_atr) if acc_low > 0 else sl_atr
+    sl = min(float(acc_low), sl_atr) if acc_low > 0 else sl_atr
     if sl >= entry:
         sl = entry - atr_1h
+    
     tp1 = entry * 1.10
     tp2 = entry * 1.20
     return sl, tp1, tp2
@@ -356,6 +360,8 @@ def extract_signals(merged: pd.DataFrame, symbol: str) -> pd.DataFrame:
         acc_low = float(row["acc_low_d"]) if not pd.isna(row["acc_low_d"]) else 0.0
         sl, tp1, tp2 = compute_sl_tp(entry, atr_val, acc_low)
         risk_dist = entry - sl
+        if risk_dist / entry * 100 > MAX_RISK_PER_TRADE_PCT:
+            continue
 
         records.append({
             "symbol":           symbol,
@@ -489,13 +495,12 @@ def simulate_trades(
 
         # Tính P&L (% từ entry, chiến lược 50% tại TP1 + 50% tại TP2)
         if outcome == "WIN_FULL":
-            # 50% đóng tại TP1 (+10%), 50% đóng tại TP2 (+20%) → avg +15%
-            pnl_pct = 15.0
+            pnl_pct = (((tp1 - entry_price) + (tp2 - entry_price)) / entry_price) * 50
         elif outcome == "WIN_PARTIAL":
             if tp1_hit:
-                # 50% đóng tại TP1 (+10%), 50% đóng tại exit (SL hoặc timeout)
+                # 50% đóng tại TP1, 50% đóng tại exit (SL hoặc timeout)
                 half2_pnl = (exit_price - entry_price) / entry_price * 100
-                pnl_pct   = 0.5 * 10.0 + 0.5 * half2_pnl
+                pnl_pct   = 0.5 * ((tp1 - entry_price) / entry_price * 100) + 0.5 * half2_pnl
             else:
                 pnl_pct = (exit_price - entry_price) / entry_price * 100
         elif outcome == "LOSS":

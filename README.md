@@ -40,6 +40,14 @@ Hoặc:
 pm2 start "python main.py" --name signal-bot --cwd /path/to/Binance-spot
 ```
 
+## Chạy backtest
+```bash
+python -m venv .venv
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.venv\Scripts\activate
+python backtest.py
+```
+
 ## Cấu hình (.env)
 
 | Biến                     | Mô tả                                                                    | Mặc định   |

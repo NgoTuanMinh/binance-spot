@@ -67,14 +67,14 @@ ENABLE_BTC_FILTER = _get_env("ENABLE_BTC_FILTER", "true").lower() not in ("false
 EMA_PERIODS = (20, 50, 200)
 RSI_PERIOD = 14
 ATR_PERIOD = 14
-VOLUME_SMA_PERIOD = 65
+VOLUME_SMA_PERIOD = 20           # Chuyển từ 65 xuống 20 để volume trung bình bám sát thực tế hơn
 ACCUMULATION_LOOKBACK = 30
-ACCUMULATION_RANGE_MAX_PCT = 15.0
-ACCUMULATION_BOTTOM_PCT = 30.0   # giá gần đáy = trong 30% dưới của range
+ACCUMULATION_RANGE_MAX_PCT = 35.0 # Mở rộng biên độ tích lũy cho crypto (15% là quá hẹp)
+ACCUMULATION_POSITION_PCT = 50.0 # Giá nến trước nằm ở nửa trên của vùng tích lũy (áp lực mua gom sát kháng cự)
 BREAKOUT_THRESHOLD_PCT = 98.0    # breakout khi giá >= 98% kháng cự
-VOLUME_SPIKE_MIN_RATIO = 6       # 600% = 6x so với SMA(volume, 65)
-RSI_MIN_DAILY = 40
-ATR_SL_MULTIPLIER = 2.0          # SL = entry - ATR_SL_MULTIPLIER * ATR(1h)
+VOLUME_SPIKE_MIN_RATIO = 2.5     # 2.5x SMA(volume) là đủ xác nhận dòng tiền, 6x thường là FOMO đu đỉnh
+RSI_MIN_DAILY = 50               # Phe mua kiểm soát hoàn toàn
+ATR_SL_MULTIPLIER = 2.5          # Nới Stop Loss tránh bị quét râu nến
 
 # --- Candles ---
 CANDLES_1D = 250

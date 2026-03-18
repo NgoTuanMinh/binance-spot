@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 
 from config import (
-    ACCUMULATION_BOTTOM_PCT,
+    ACCUMULATION_POSITION_PCT,
     ACCUMULATION_LOOKBACK,
     ACCUMULATION_RANGE_MAX_PCT,
     ATR_PERIOD,
@@ -268,10 +268,11 @@ class SignalDetector:
         if range_pct >= ACCUMULATION_RANGE_MAX_PCT:
             return False, range_pct
 
-        # Nến daily đã đóng gần nhất phải nằm trong 30% dưới của range
-        bottom_level = low + (high - low) * (ACCUMULATION_BOTTOM_PCT / 100)
+        # Nến daily đã đóng gần nhất phải nằm ở NỬA TRÊN (hoặc mức POSITION_PCT) của range
+        # Mô hình VCP (Volatility Contraction) - tích lũy sát kháng cự
+        position_level = low + (high - low) * (ACCUMULATION_POSITION_PCT / 100)
         prev_close = df_d.iloc[-2]["close"]
-        if prev_close > bottom_level:
+        if prev_close < position_level:
             return False, range_pct
 
         # Giá hiện tại (có thể là candle đang hình thành) phải vượt 98% kháng cự
@@ -293,18 +294,17 @@ class SignalDetector:
         accumulation_low: float,
     ) -> tuple[float, float, float]:
         """
-        SL: max(accumulation_low, entry - ATR_SL_MULTIPLIER × ATR_1h).
-        Dùng max (không phải min) để lấy mức SL CHẶ T HƠN nhưng không thấp hơn đáy
-        tích lũy.
+        SL: min(accumulation_low, entry - ATR_SL_MULTIPLIER × ATR_1h).
+        Dùng min để lấy mức SL RỘNG HƠN, ưu tiên đáy tích lũy.
         TP1 = entry × 1.10, TP2 = entry × 1.20.
 
-        Lý do dùng max:
-        - entry - N×ATR thường ≈ 1-3% dưới entry (hợp lý cho breakout)
-        - accumulation_low có thể 10-15% dưới entry (quá xa, R:R âm tại TP1)
-        - max() chọn mức gần entry hơn (ATR-based), dùng acc_low chỉ khi ATR rất lớn.
+        Lý do dùng min:
+        - `accumulation_low` là hỗ trợ tự nhiên, SL dưới mức này là hợp lý.
+        - `entry - N×ATR` có thể đặt SL quá gần nếu ATR nhỏ.
+        - `min` đảm bảo SL không bị đặt quá chặt, cho giá có không gian "thở".
         """
         sl_atr = entry - ATR_SL_MULTIPLIER * atr_1h
-        sl = max(accumulation_low, sl_atr) if accumulation_low > 0 else sl_atr
+        sl = min(accumulation_low, sl_atr) if accumulation_low > 0 else sl_atr
         if sl >= entry:
             sl = entry - atr_1h  # fallback tránh SL >= entry
         tp1 = entry * 1.10

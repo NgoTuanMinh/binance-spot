@@ -4,3 +4,4 @@
 /.venv
 /dist
 /__pycache__
+/backtest_results
